@@ -1,0 +1,661 @@
+<!-- game_captcha/templates/game_captcha/game.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game CAPTCHA</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            background-color: #f5f5f5;
+        }
+        
+        .game-container {
+            position: relative;
+            width: 400px;
+            height: 300px;
+            border: 2px solid #333;
+            border-radius: 8px;
+            overflow: hidden;
+            background-color: white;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+        }
+        
+        canvas {
+            display: block;
+        }
+        
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        
+        .instructions {
+            text-align: center;
+            margin-bottom: 20px;
+            max-width: 400px;
+            color: #555;
+        }
+        
+        .status {
+            margin-top: 15px;
+            font-weight: bold;
+            height: 20px;
+        }
+        
+        .success {
+            color: green;
+        }
+        
+        .failure {
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <h1>Game CAPTCHA</h1>
+    <div class="instructions">
+        Drag the ball to the target while avoiding obstacles to prove you're human.
+    </div>
+    
+    <div class="game-container">
+        <canvas id="gameCanvas" width="400" height="300"></canvas>
+    </div>
+    
+    <div id="status" class="status"></div>
+    
+    <script>
+        // Game constants
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const sessionId = '{{ session_id }}';
+        
+        // Game elements
+        const ball = {
+            x: 50,
+            y: 150,
+            radius: 15,
+            isDragging: false,
+            color: '#3498db'
+        };
+        
+        const target = {
+            x: 330,
+            y: 150,
+            radius: 20,
+            color: '#2ecc71'
+        };
+        
+        // Create some obstacles
+        const obstacles = [
+            { x: 150, y: 100, width: 20, height: 150, color: '#e74c3c' },
+            { x: 250, y: 50, width: 20, height: 150, color: '#e74c3c' }
+        ];
+        
+        // Mouse movement tracking
+        let mouseMovements = [];
+        let gameStarted = false;
+        let gameCompleted = false;
+        let gameSuccess = false;
+        
+        // Track mouse position
+        let mouseX = 0;
+        let mouseY = 0;
+        
+        // Initialize game
+        function init() {
+            // Add event listeners
+            canvas.addEventListener('mousedown', handleMouseDown);
+            canvas.addEventListener('mousemove', handleMouseMove);
+            canvas.addEventListener('mouseup', handleMouseUp);
+            canvas.addEventListener('touchstart', handleTouchStart);
+            canvas.addEventListener('touchmove', handleTouchMove);
+            canvas.addEventListener('touchend', handleTouchEnd);
+            
+            // Start the game loop
+            requestAnimationFrame(gameLoop);
+        }
+        
+        // Game loop
+        function gameLoop() {
+            // Clear canvas
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // Draw target
+            drawCircle(target.x, target.y, target.radius, target.color);
+            
+            // Draw obstacles
+            obstacles.forEach(obstacle => {
+                drawRectangle(obstacle.x, obstacle.y, obstacle.width, obstacle.height, obstacle.color);
+            });
+            
+            // Draw ball
+            drawCircle(ball.x, ball.y, ball.radius, ball.color);
+            
+            // Check if ball is being dragged
+            if (ball.isDragging) {
+                ball.x = mouseX;
+                ball.y = mouseY;
+                
+                // Record mouse movement for analysis
+                if (gameStarted && !gameCompleted) {
+                    mouseMovements.push({
+                        timestamp: performance.now(),
+                        x: mouseX,
+                        y: mouseY
+                    });
+                }
+                
+                // Check collision with obstacles
+                if (checkObstacleCollision()) {
+                    // Game over - collision with obstacle
+                    endGame(false);
+                }
+                
+                // Check if reached target
+                if (checkTargetCollision()) {
+                    // Game completed successfully
+                    endGame(true);
+                }
+            }
+            
+            if (!gameCompleted) {
+                requestAnimationFrame(gameLoop);
+            }
+        }
+        
+        // Helper functions
+        function drawCircle(x, y, radius, color) {
+            ctx.beginPath();
+            ctx.arc(x, y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = color;
+            ctx.fill();
+            ctx.closePath();
+        }
+        
+        function drawRectangle(x, y, width, height, color) {
+            ctx.fillStyle = color;
+            ctx.fillRect(x, y, width, height);
+        }
+        
+        function checkObstacleCollision() {
+            return obstacles.some(obstacle => {
+                // Calculate the closest point on the rectangle to the circle
+                let closestX = Math.max(obstacle.x, Math.min(ball.x, obstacle.x + obstacle.width));
+                let closestY = Math.max(obstacle.y, Math.min(ball.y, obstacle.y + obstacle.height));
+                
+                // Calculate the distance between the closest point and the circle's center
+                let distanceX = ball.x - closestX;
+                let distanceY = ball.y - closestY;
+                let distanceSquared = (distanceX * distanceX) + (distanceY * distanceY);
+                
+                return distanceSquared < (ball.radius * ball.radius);
+            });
+        }
+        
+        function checkTargetCollision() {
+            let dx = ball.x - target.x;
+            let dy = ball.y - target.y;
+            let distance = Math.sqrt(dx * dx + dy * dy);
+            
+            return distance < ball.radius + target.radius;
+        }
+        
+        function endGame(success) {
+            gameCompleted = true;
+            gameSuccess = success;
+            
+            const statusElement = document.getElementById('status');
+            
+            if (success) {
+                statusElement.textContent = "Success! Verifying...";
+                statusElement.className = "status";
+            } else {
+                statusElement.textContent = "Failed! Try again.";
+                statusElement.className = "status failure";
+            }
+            
+            // Send movement data to server for verification
+            verifyCaptcha();
+        }
+        
+        async function verifyCaptcha() {
+            try {
+                const response = await fetch('/captcha/verify/', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        session_id: sessionId,
+                        movements: mouseMovements,
+                        completed: gameCompleted,
+                        success: gameSuccess
+                    })
+                });
+                
+                const data = await response.json();
+                const statusElement = document.getElementById('status');
+                
+                if (data.success) {
+                    statusElement.textContent = "CAPTCHA passed! You're human.";
+                    statusElement.className = "status success";
+                } else {
+                    let message = "CAPTCHA failed.";
+                    if (!data.is_human) {
+                        message += " Your movement patterns seem bot-like.";
+                    }
+                    statusElement.textContent = message;
+                    statusElement.className = "status failure";
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                document.getElementById('status').textContent = "Error verifying CAPTCHA.";
+                document.getElementById('status').className = "status failure";
+            }
+        }
+        
+        // Event handlers
+        function handleMouseDown(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clickX = e.clientX - rect.left;
+            const clickY = e.clientY - rect.top;
+            
+            // Check if click is inside the ball
+            const dx = clickX - ball.x;
+            const dy = clickY - ball.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance < ball.radius) {
+                ball.isDragging = true;
+                mouseX = clickX;
+                mouseY = clickY;
+                gameStarted = true;
+            }
+        }
+        
+        function handleMouseMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            mouseX = e.clientX - rect.left;
+            mouseY = e.clientY - rect.top;
+        }
+        
+        function handleMouseUp() {
+            ball.isDragging = false;
+        }
+        
+        // Touch event handlers for mobile support
+        function handleTouchStart(e) {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const touch = e.touches[0];
+            const touchX = touch.clientX - rect.left;
+            const touchY = touch.clientY - rect.top;
+            
+            // Check if touch is inside the ball
+            const dx = touchX - ball.x;
+            const dy = touchY - ball.y;
+            const distance = Math.sqrt(dx * dx + dy * dy);
+            
+            if (distance < ball.radius) {
+                ball.isDragging = true;
+                mouseX = touchX;
+                mouseY = touchY;
+                gameStarted = true;
+            }
+        }
+        
+        function handleTouchMove(e) {
+            e.preventDefault();
+            if (ball.isDragging) {
+                const rect = canvas.getBoundingClientRect();
+                const touch = e.touches[0];
+                mouseX = touch.clientX - rect.left;
+                mouseY = touch.clientY - rect.top;
+            }
+        }
+        
+        function handleTouchEnd() {
+            ball.isDragging = false;
+        }
+
+        // Add this JavaScript to your game.html file
+
+// Create a visualization canvas for movement patterns
+function setupVisualization() {
+    // Create a new canvas for visualization
+    const visualContainer = document.createElement('div');
+    visualContainer.className = 'visual-container';
+    visualContainer.style.cssText = 'width: 400px; height: 150px; margin-top: 20px; border: 1px solid #ccc; position: relative;';
+    
+    const visualCanvas = document.createElement('canvas');
+    visualCanvas.id = 'visualCanvas';
+    visualCanvas.width = 400;
+    visualCanvas.height = 150;
+    visualContainer.appendChild(visualCanvas);
+    
+    // Add metrics display
+    const metricsDisplay = document.createElement('div');
+    metricsDisplay.id = 'metricsDisplay';
+    metricsDisplay.style.cssText = 'margin-top: 10px; font-size: 12px; color: #555;';
+    
+    // Insert after game container
+    const gameContainer = document.querySelector('.game-container');
+    gameContainer.parentNode.insertBefore(visualContainer, gameContainer.nextSibling);
+    gameContainer.parentNode.insertBefore(metricsDisplay, visualContainer.nextSibling);
+    
+    return visualCanvas;
+}
+
+const visualCanvas = setupVisualization();
+const visualCtx = visualCanvas.getContext('2d');
+
+// Variables for visualization
+let speedData = [];
+let accelerationData = [];
+let directionData = [];
+const maxDataPoints = 100;
+
+// Function to update visualization
+function updateVisualization() {
+    if (mouseMovements.length < 2) return;
+    
+    // Calculate latest metrics
+    const lastIdx = mouseMovements.length - 1;
+    const prevIdx = mouseMovements.length - 2;
+    
+    // Calculate speed
+    const dx = mouseMovements[lastIdx].x - mouseMovements[prevIdx].x;
+    const dy = mouseMovements[lastIdx].y - mouseMovements[prevIdx].y;
+    const dt = mouseMovements[lastIdx].timestamp - mouseMovements[prevIdx].timestamp;
+    
+    if (dt > 0) {
+        const distance = Math.sqrt(dx*dx + dy*dy);
+        const speed = distance / dt;
+        
+        // Add to data arrays
+        speedData.push(speed);
+        
+        // Calculate acceleration if possible
+        if (speedData.length > 1) {
+            const prevSpeed = speedData[speedData.length - 2];
+            const acceleration = (speed - prevSpeed) / dt;
+            accelerationData.push(acceleration);
+        } else {
+            accelerationData.push(0);
+        }
+        
+        // Calculate direction change if possible
+        if (mouseMovements.length > 2) {
+            const prevPrevIdx = mouseMovements.length - 3;
+            const prevDx = mouseMovements[prevIdx].x - mouseMovements[prevPrevIdx].x;
+            const prevDy = mouseMovements[prevIdx].y - mouseMovements[prevPrevIdx].y;
+            
+            // Calculate angle between vectors
+            const dot = prevDx * dx + prevDy * dy;
+            const mag1 = Math.sqrt(prevDx * prevDx + prevDy * prevDy);
+            const mag2 = Math.sqrt(dx * dx + dy * dy);
+            
+            if (mag1 > 0 && mag2 > 0) {
+                const cosAngle = Math.max(-1, Math.min(1, dot / (mag1 * mag2)));
+                const angle = Math.acos(cosAngle) * 180 / Math.PI;
+                directionData.push(angle);
+            } else {
+                directionData.push(0);
+            }
+        } else {
+            directionData.push(0);
+        }
+        
+        // Limit data arrays
+        if (speedData.length > maxDataPoints) {
+            speedData.shift();
+            accelerationData.shift();
+            directionData.shift();
+        }
+        
+        // Draw visualization
+        drawVisualization();
+    }
+}
+
+// Function to draw the visualization
+function drawVisualization() {
+    const width = visualCanvas.width;
+    const height = visualCanvas.height;
+    
+    // Clear canvas
+    visualCtx.clearRect(0, 0, width, height);
+    
+    // Draw background grid
+    visualCtx.strokeStyle = '#eee';
+    visualCtx.lineWidth = 1;
+    
+    // Draw grid lines
+    for (let i = 0; i < width; i += 20) {
+        visualCtx.beginPath();
+        visualCtx.moveTo(i, 0);
+        visualCtx.lineTo(i, height);
+        visualCtx.stroke();
+    }
+    
+    for (let i = 0; i < height; i += 20) {
+        visualCtx.beginPath();
+        visualCtx.moveTo(0, i);
+        visualCtx.lineTo(width, i);
+        visualCtx.stroke();
+    }
+    
+    // Draw lines
+    if (speedData.length > 1) {
+        // Normalize data for display
+        const maxSpeed = Math.max(...speedData, 1);
+        const maxAcceleration = Math.max(...accelerationData.map(Math.abs), 1);
+        const maxDirection = 180;
+        
+        // Draw speed line (blue)
+        visualCtx.strokeStyle = '#3498db';
+        visualCtx.lineWidth = 2;
+        visualCtx.beginPath();
+        
+        for (let i = 0; i < speedData.length; i++) {
+            const x = (i / (maxDataPoints - 1)) * width;
+            const y = height - (speedData[i] / maxSpeed) * (height * 0.8);
+            
+            if (i === 0) {
+                visualCtx.moveTo(x, y);
+            } else {
+                visualCtx.lineTo(x, y);
+            }
+        }
+        visualCtx.stroke();
+        
+        // Draw acceleration line (orange)
+        visualCtx.strokeStyle = '#e67e22';
+        visualCtx.lineWidth = 2;
+        visualCtx.beginPath();
+        
+        for (let i = 0; i < accelerationData.length; i++) {
+            const x = (i / (maxDataPoints - 1)) * width;
+            // Center at middle of canvas for acceleration
+            const y = height / 2 - (accelerationData[i] / maxAcceleration) * (height * 0.4);
+            
+            if (i === 0) {
+                visualCtx.moveTo(x, y);
+            } else {
+                visualCtx.lineTo(x, y);
+            }
+        }
+        visualCtx.stroke();
+        
+        // Draw direction changes (green)
+        visualCtx.strokeStyle = '#2ecc71';
+        visualCtx.lineWidth = 2;
+        visualCtx.beginPath();
+        
+        for (let i = 0; i < directionData.length; i++) {
+            const x = (i / (maxDataPoints - 1)) * width;
+            const y = height - (directionData[i] / maxDirection) * (height * 0.8);
+            
+            if (i === 0) {
+                visualCtx.moveTo(x, y);
+            } else {
+                visualCtx.lineTo(x, y);
+            }
+        }
+        visualCtx.stroke();
+        
+        // Legend
+        visualCtx.fillStyle = '#333';
+        visualCtx.font = '10px Arial';
+        visualCtx.fillText('Speed', 10, 15);
+        visualCtx.fillStyle = '#3498db';
+        visualCtx.fillRect(45, 10, 10, 10);
+        
+        visualCtx.fillStyle = '#333';
+        visualCtx.fillText('Acceleration', 70, 15);
+        visualCtx.fillStyle = '#e67e22';
+        visualCtx.fillRect(135, 10, 10, 10);
+        
+        visualCtx.fillStyle = '#333';
+        visualCtx.fillText('Direction Change', 160, 15);
+        visualCtx.fillStyle = '#2ecc71';
+        visualCtx.fillRect(245, 10, 10, 10);
+        
+        // Update metrics display
+        updateMetricsDisplay();
+    }
+}
+
+// Update metrics display with current values
+function updateMetricsDisplay() {
+    const metricsDisplay = document.getElementById('metricsDisplay');
+    
+    if (speedData.length > 10) {
+        // Calculate metrics
+        const avgSpeed = speedData.reduce((a, b) => a + b, 0) / speedData.length;
+        const speedVariance = speedData.reduce((a, b) => a + Math.pow(b - avgSpeed, 2), 0) / speedData.length;
+        const speedStd = Math.sqrt(speedVariance);
+        
+        // Count direction changes
+        let dirChanges = 0;
+        for (let i = 1; i < directionData.length; i++) {
+            if (directionData[i] > 20) {
+                dirChanges++;
+            }
+        }
+        
+        // Count acceleration changes
+        let accelChanges = 0;
+        for (let i = 1; i < accelerationData.length; i++) {
+            if ((accelerationData[i] > 0 && accelerationData[i-1] < 0) || 
+                (accelerationData[i] < 0 && accelerationData[i-1] > 0)) {
+                accelChanges++;
+            }
+        }
+        
+        // Create metrics display
+        metricsDisplay.innerHTML = `
+            <div><strong>Speed:</strong> Avg: ${avgSpeed.toFixed(2)}, StdDev: ${speedStd.toFixed(2)}, Ratio: ${(speedStd/avgSpeed).toFixed(2)}</div>
+            <div><strong>Direction:</strong> Changes: ${dirChanges}, Ratio: ${(dirChanges/directionData.length).toFixed(2)}</div>
+            <div><strong>Acceleration:</strong> Changes: ${accelChanges}, Ratio: ${(accelChanges/accelerationData.length).toFixed(2)}</div>
+        `;
+    }
+}
+
+// Update the event handlers to call visualization
+const originalHandleMouseMove = handleMouseMove;
+handleMouseMove = function(e) {
+    originalHandleMouseMove(e);
+    if (ball.isDragging && gameStarted && !gameCompleted) {
+        updateVisualization();
+    }
+};
+
+const originalHandleTouchMove = handleTouchMove;
+handleTouchMove = function(e) {
+    originalHandleTouchMove(e);
+    if (ball.isDragging && gameStarted && !gameCompleted) {
+        updateVisualization();
+    }
+};
+
+// Modify the verifyCaptcha function to request detailed analysis
+async function verifyCaptcha() {
+    try {
+        const response = await fetch('/captcha/verify/', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                session_id: sessionId,
+                movements: mouseMovements,
+                completed: gameCompleted,
+                success: gameSuccess,
+                detailed: true  // Request detailed metrics
+            })
+        });
+        
+        const data = await response.json();
+        const statusElement = document.getElementById('status');
+        
+        if (data.success) {
+            statusElement.textContent = "CAPTCHA passed! You're human.";
+            statusElement.className = "status success";
+        } else {
+            let message = "CAPTCHA failed.";
+            if (data.message) {
+                message += " " + data.message;
+            }
+            statusElement.textContent = message;
+            statusElement.className = "status failure";
+        }
+        
+        // Show detailed metrics if available
+        if (data.metrics) {
+            const metricsDisplay = document.getElementById('metricsDisplay');
+            let metricsHtml = '<div><strong>Detailed Analysis:</strong></div>';
+            
+            metricsHtml += `<div>Human Score: ${data.score.toFixed(2)}/100 (Confidence: ${(data.confidence*100).toFixed(1)}%)</div>`;
+            
+            if (data.metrics.speed_variance_ratio) {
+                metricsHtml += `<div>Speed Variance Ratio: ${data.metrics.speed_variance_ratio.toFixed(3)}</div>`;
+            }
+            if (data.metrics.acceleration_changes_ratio) {
+                metricsHtml += `<div>Acceleration Changes: ${data.metrics.acceleration_changes_ratio.toFixed(3)}</div>`;
+            }
+            if (data.metrics.direction_changes_ratio) {
+                metricsHtml += `<div>Direction Changes: ${data.metrics.direction_changes_ratio.toFixed(3)}</div>`;
+            }
+            if (data.metrics.path_efficiency) {
+                metricsHtml += `<div>Path Efficiency: ${data.metrics.path_efficiency.toFixed(3)}</div>`;
+            }
+            if (data.metrics.speed_entropy) {
+                metricsHtml += `<div>Speed Entropy: ${data.metrics.speed_entropy.toFixed(3)}</div>`;
+            }
+            if (data.metrics.jerk_ratio) {
+                metricsHtml += `<div>Jerk Ratio: ${data.metrics.jerk_ratio.toFixed(3)}</div>`;
+            }
+            
+            metricsDisplay.innerHTML = metricsHtml;
+        }
+    } catch (error) {
+        console.error('Error:', error);
+        document.getElementById('status').textContent = "Error verifying CAPTCHA.";
+        document.getElementById('status').className = "status failure";
+    }
+}
+        
+        // Start the game
+        init();
+    </script>
+</body>
+</html>
