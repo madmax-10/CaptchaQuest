@@ -7,6 +7,19 @@ import uuid
 import numpy as np
 import math
 from scipy.stats import entropy
+import requests
+import os
+
+def success_view(request):
+    # This is where users will be redirected after clicking "Continue"
+    continue_url = request.session.get('continue_url', '/captcha')
+    return render(request, 'game_captcha/success.html', {'continue_url': continue_url})
+
+# OpenRouter configuration
+OPENROUTER_API_KEY = None
+with open("api.txt", "r") as apiFile:
+    OPENROUTER_API_KEY = apiFile.read().strip()
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 def game_view(request):
     # Create a new CAPTCHA session
@@ -149,9 +162,162 @@ def calculate_metrics(movements):
     
     return metrics
 
-def classify_movement(metrics):
+def classify_movement_with_ai(metrics, movements):
+    """
+    Use DeepSeek AI through OpenRouter to analyze the movement patterns
+    and provide a more sophisticated human vs bot detection with improved
+    sensitivity to human-like movements
+    """
+    if not OPENROUTER_API_KEY:
+        # Fall back to traditional algorithm if API key is not available
+        return classify_movement(metrics, human_bias=True)
+    
+    # Prepare data for AI analysis with better sampling
+    print("Using AI with improved human detection")
+    
+    # Sample more efficiently - keep beginning, middle and end points
+    movement_summary = []
+    if len(movements) <= 100:
+        # If we have fewer than 100 points, use all of them
+        movement_summary = movements
+    else:
+        # Take first 20 points (beginning of movement)
+        movement_summary.extend(movements[:20])
+        
+        # Take middle points
+        middle_start = len(movements) // 3
+        middle_end = 2 * len(movements) // 3
+        middle_step = max(1, (middle_end - middle_start) // 30)
+        movement_summary.extend(movements[middle_start:middle_end:middle_step])
+        
+        # Take last 20 points (end of movement)
+        movement_summary.extend(movements[-20:])
+    
+    # Format key metrics for AI analysis
+    metrics_summary = {
+        'speed_variance_ratio': metrics.get('speed_variance_ratio', 0),
+        'acceleration_changes_ratio': metrics.get('acceleration_changes_ratio', 0),
+        'direction_changes_ratio': metrics.get('direction_changes_ratio', 0),
+        'path_efficiency': metrics.get('path_efficiency', 0),
+        'speed_entropy': metrics.get('speed_entropy', 0),
+        'jerk_ratio': metrics.get('jerk_ratio', 0),
+        'pause_ratio': metrics.get('pause_ratio', 0),
+        'hover_ratio': metrics.get('hover_ratio', 0)
+    }
+    
+    prompt = f"""
+    I need to determine if mouse movement patterns are from a human or an AI/bot.
+    This analysis should lean toward classifying movements as human when in doubt.
+    
+    Key metrics from the movement data:
+    {json.dumps(metrics_summary, indent=2)}
+    
+    Sample of movement data points (x, y, timestamp):
+    {json.dumps([{'x': m['x'], 'y': m['y'], 'timestamp': m['timestamp']} for m in movement_summary[:15]], indent=2)}
+    
+    Analyze these patterns and determine if this is likely human or bot behavior.
+    
+    Human movements typically have these characteristics (with typical ranges):
+    1. Speed variance ratio: > 0.2 (higher variance is more human-like)
+    2. Acceleration changes ratio: > 0.1 (humans change acceleration frequently)
+    3. Direction changes ratio: > 0.1 (humans change directions frequently)
+    4. Path efficiency: < 0.9 (less efficient paths are typically human)
+    5. Speed entropy: > 0.2 (diverse speed distribution is human-like)
+    6. Jerk ratio: > 0.1 (some jerkiness is natural in human movement)
+    7. Pause ratio: > 0.05 (humans naturally pause)
+    8. Hover ratio: > 0.05 (humans hover over elements)
+    
+    IMPORTANT: Many humans use trackpads, different pointing devices, or have varying levels 
+    of motor control, which can result in movement patterns that might initially appear bot-like.
+    
+    Even if only some metrics are in the human range, prefer classifying as human rather than bot.
+    
+    IF IN DOUBT, CLASSIFY AS HUMAN.
+    
+    Respond in this exact JSON format **ONLY**:
+    {{
+        "is_human": true/false,
+        "confidence": 0.0-1.0,
+        "reason": "Explanation for the decision",
+        "score": 0-100
+    }}
+    Do NOT provide explanations or extra text. Only return a JSON object.
+    """
+    
+    try:
+        # Make API request to OpenRouter's DeepSeek model
+        headers = {
+            "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "deepseek/deepseek-r1-distill-llama-70b:free",  # Using the free DeepSeek model
+            "messages": [
+                {"role": "system", "content": "You are an AI trained to analyze mouse movement patterns and detect if they are from a human or a bot. Always err on the side of classifying as human when uncertain."},
+                {"role": "user", "content": prompt}
+            ],
+            "max_tokens": 4096
+        }
+        
+        response = requests.post(OPENROUTER_API_URL, headers=headers, json=payload)
+        print(f"API Response Status: {response.status_code}")
+        
+        if response.status_code == 200:
+            response_data = response.json()
+            ai_output = response_data['choices'][0]['message']['content']
+            print(f"AI Output: {ai_output}")
+            
+            try:
+                # Try to extract JSON from the response with improved parsing
+                start_idx = ai_output.find('{')
+                end_idx = ai_output.rfind('}') + 1
+                
+                if start_idx >= 0 and end_idx > start_idx:
+                    json_output = ai_output[start_idx:end_idx]
+                    ai_result = json.loads(json_output)
+                    
+                    # Ensure all required fields are present
+                    if 'is_human' in ai_result and 'confidence' in ai_result and 'reason' in ai_result:
+                        # Apply confidence threshold adjustment - bias toward human classification
+                        if not ai_result['is_human'] and ai_result['confidence'] < 0.85:
+                            print("Bot detection below high confidence threshold, reclassifying as human")
+                            ai_result['is_human'] = True
+                            ai_result['confidence'] = 1.0 - ai_result['confidence']
+                            ai_result['reason'] = f"Reclassified as human due to uncertainty. Original reason: {ai_result['reason']}"
+                            ai_result['score'] = 100 - ai_result.get('score', 50)
+                            
+                        return {
+                            'is_human': bool(ai_result['is_human']),
+                            'confidence': float(ai_result['confidence']),
+                            'reason': ai_result['reason'],
+                            'score': float(ai_result.get('score', 50.0)),
+                            'detailed_metrics': metrics,
+                            'ai_powered': True
+                        }
+            except json.JSONDecodeError:
+                print("Failed to parse AI response as JSON")
+            except Exception as e:
+                print(f"Error processing AI response: {str(e)}")
+        
+        # Fall back to traditional algorithm if AI fails
+        print("Falling back to traditional algorithm due to AI response failure")
+        traditional_result = classify_movement(metrics, human_bias=True)
+        traditional_result['ai_powered'] = False
+        return traditional_result
+        
+    except Exception as e:
+        print(f"Error using AI for classification: {str(e)}")
+        # Fall back to traditional algorithm on exception
+        traditional_result = classify_movement(metrics, human_bias=True)
+        traditional_result['ai_powered'] = False
+        return traditional_result
+
+
+def classify_movement(metrics, human_bias=False):
     """
     Use the calculated metrics to determine if movement is human-like
+    with option to bias toward human classification
     """
     # Set default values if metrics are missing
     speed_var_ratio = metrics.get('speed_variance_ratio', 0)
@@ -162,16 +328,6 @@ def classify_movement(metrics):
     jerk_ratio = metrics.get('jerk_ratio', 0)
     pause_ratio = metrics.get('pause_ratio', 0)
     hover_ratio = metrics.get('hover_ratio', 0)
-    
-    # Human characteristics:
-    # 1. Variable speed (high variance)
-    # 2. Many acceleration sign changes
-    # 3. Many direction changes
-    # 4. Lower path efficiency (not taking direct routes)
-    # 5. High entropy in speed distribution
-    # 6. High jerk ratio (uneven changes in acceleration)
-    # 7. Some pauses during movement
-    # 8. Some hovering behavior near obstacles
     
     # Calculate human-likeness score (0-100)
     scores = [
@@ -189,13 +345,22 @@ def classify_movement(metrics):
     valid_scores = [s for s in scores if s is not None]
     if not valid_scores:
         return {
-            'is_human': False,
-            'confidence': 0.0,
-            'reason': 'No valid metrics available'
+            'is_human': human_bias,  # Default to human if human_bias is True
+            'confidence': 0.5,
+            'reason': 'No valid metrics available',
+            'score': 50 if human_bias else 0,
+            'ai_powered': False
         }
     
-    # Calculate weighted average
-    weights = [0.2, 0.15, 0.15, 0.1, 0.1, 0.1, 0.1, 0.1]  # Weights should sum to 1
+    # Calculate weighted average with adjustments for human bias
+    # If human_bias is True, we'll lower the weights of metrics that might falsely indicate bots
+    if human_bias:
+        # Emphasize metrics that are more reliable for human detection
+        weights = [0.25, 0.15, 0.2, 0.1, 0.1, 0.05, 0.1, 0.05]  # Adjusted weights
+    else:
+        # Original weights
+        weights = [0.2, 0.15, 0.15, 0.1, 0.1, 0.1, 0.1, 0.1]
+    
     valid_weights = weights[:len(valid_scores)]
     
     # Normalize weights
@@ -207,8 +372,17 @@ def classify_movement(metrics):
     total_score = sum(s * w for s, w in zip(valid_scores, valid_weights))
     
     # Determine if human based on threshold
-    threshold = 40  # This can be adjusted based on testing
+    # Lower the threshold if human_bias is True
+    threshold = 30 if human_bias else 40
     is_human = total_score >= threshold
+    
+    # Human bias override: If any individual score is very high, consider it human
+    if human_bias and not is_human:
+        # If any individual metric is strongly indicative of human movement
+        max_score = max(valid_scores)
+        if max_score > 70:  # High score in any one metric suggests human
+            is_human = True
+            total_score = max(total_score, 50)  # Ensure score is at least 50
     
     # Calculate confidence
     if total_score <= threshold:
@@ -233,13 +407,17 @@ def classify_movement(metrics):
     
     primary_reason = reasons[max_score_index]
     
-    return {
+    result = {
         'is_human': is_human,
         'score': total_score,
         'confidence': confidence,
         'reason': f"{'Human-like' if is_human else 'Bot-like'} movement detected: {primary_reason}",
-        'detailed_metrics': metrics
+        'detailed_metrics': metrics,
+        'ai_powered': False
     }
+    
+    print(result)
+    return result
 
 
 @csrf_exempt
@@ -268,7 +446,19 @@ def verify_captcha(request):
             
             # Bot detection algorithm
             metrics = calculate_metrics(movements)
-            result = classify_movement(metrics)
+            
+            # Use the AI-powered classification if movements are sufficient
+            if len(movements) >= 10:
+                result = classify_movement_with_ai(metrics, movements)
+            else:
+                result = {
+                    'is_human': False, 
+                    'confidence': 1.0, 
+                    'reason': 'Insufficient movement data for analysis',
+                    'score': 0,
+                    'ai_powered': False
+                }
+                
             is_human = bool(result['is_human'])  # Convert to native Python bool
             
             # Update session status
@@ -280,7 +470,8 @@ def verify_captcha(request):
             response_data = {
                 'success': bool(session.passed),  # Convert to native Python bool
                 'is_human': is_human,
-                'message': result['reason']
+                'message': result['reason'],
+                'ai_powered': bool(result.get('ai_powered', False))
             }
             
             # Include detailed metrics if requested
